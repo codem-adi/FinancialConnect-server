@@ -12,12 +12,47 @@ import {
   buildCardBillDueEmail,
 } from './emailTemplates.js';
 
+const DEFAULT_FROM_NAME = 'RetireWise';
+
+function stripQuotes(value) {
+  const v = (value || '').trim();
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1).trim();
+  }
+  return v;
+}
+
+/** Build a Gmail-safe From header — address must match SMTP_USER. */
+export function getFromAddress() {
+  const smtpUser = stripQuotes(process.env.SMTP_USER).toLowerCase();
+  const rawFrom = stripQuotes(process.env.EMAIL_FROM);
+  const explicitName = stripQuotes(process.env.EMAIL_FROM_NAME);
+
+  // "RetireWise <user@gmail.com>"
+  const angleMatch = rawFrom.match(/^(.+?)\s*<([^>]+)>$/);
+  const parsedName = angleMatch ? stripQuotes(angleMatch[1]) : '';
+  const parsedAddress = angleMatch ? stripQuotes(angleMatch[2]).toLowerCase() : '';
+
+  const name = explicitName || parsedName || DEFAULT_FROM_NAME;
+  const address = smtpUser || parsedAddress || rawFrom.toLowerCase();
+
+  if (!address.includes('@')) {
+    return smtpUser || rawFrom;
+  }
+
+  return { name, address };
+}
+
+export function formatFromAddress(from = getFromAddress()) {
+  if (typeof from === 'string') return from;
+  return `${from.name} <${from.address}>`;
+}
+
 export function isSmtpConfigured() {
   return Boolean(
     process.env.SMTP_HOST
     && process.env.SMTP_USER
-    && process.env.SMTP_PASS
-    && process.env.EMAIL_FROM,
+    && process.env.SMTP_PASS,
   );
 }
 
@@ -39,16 +74,18 @@ function getTransport() {
 async function sendEmail(to, { subject, text, html }, logLabel) {
   if (!isSmtpConfigured()) return null;
 
+  const from = getFromAddress();
   const transport = getTransport();
   const info = await transport.sendMail({
-    from: process.env.EMAIL_FROM,
+    from,
+    sender: typeof from === 'object' ? from.address : from,
     to,
     subject,
     text,
     html,
   });
 
-  console.log(`[email] ${logLabel} → ${to}`);
+  console.log(`[email] ${logLabel} → ${to} (from: ${formatFromAddress(from)})`);
   return info;
 }
 
@@ -104,7 +141,7 @@ export async function sendCardBillDueEmail(to, data) {
 
 export function logSmtpStartup() {
   if (isSmtpConfigured()) {
-    console.log(`[email] SMTP ready — emails from ${process.env.EMAIL_FROM}`);
+    console.log(`[email] SMTP ready — emails from ${formatFromAddress()}`);
   } else {
     console.log('[email] SMTP not configured — OTP codes log to console in development');
   }
