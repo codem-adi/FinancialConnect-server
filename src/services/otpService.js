@@ -196,6 +196,7 @@ export function clearUserOtp(user) {
 
 export function sendOtpRateLimitResponse(res, err) {
   if (err instanceof OtpRateLimitError) {
+    console.error(`[otp] Code not sent: ${err.message}`);
     return res.status(429).json({
       error: err.message,
       code: err.code,

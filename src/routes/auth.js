@@ -18,6 +18,7 @@ import {
   getOtpRateLimitStatus,
   sendOtpRateLimitResponse,
   clearExpiredOtpBlock,
+  OtpRateLimitError,
 } from '../services/otpService.js';
 import { recordChange } from '../services/auditService.js';
 import {
@@ -30,10 +31,11 @@ const router = express.Router();
 const IS_DEV = process.env.NODE_ENV !== 'production';
 
 function withOtpMeta(user, body, devOtp) {
+  const meta = otpRateLimitMeta(user);
   return {
     ...body,
-    ...otpRateLimitMeta(user),
-    resendAvailableIn: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS) || 30,
+    ...meta,
+    resendAvailableIn: meta.resendAvailableIn || Number(process.env.OTP_RESEND_COOLDOWN_SECONDS) || 30,
     ...(IS_DEV && devOtp ? { devOtp } : {}),
   };
 }
@@ -46,6 +48,24 @@ async function sessionPayload(user) {
   const auth = await buildAuthResponse(user, membership, household);
   const token = signToken(user._id);
   return { token, ...auth };
+}
+
+/** Send activation OTP when possible; never block returning a verification session. */
+async function sendActivationOtpSafe(user) {
+  try {
+    const devOtp = await requestOtpSend(user, 'activation');
+    return { devOtp, otpError: null, otpSent: true };
+  } catch (err) {
+    if (err instanceof OtpRateLimitError) {
+      console.error(`[otp] Activation code not sent to ${user.email}: ${err.message}`);
+      return { devOtp: null, otpError: err, otpSent: false };
+    }
+    if (err.message?.includes('Could not send verification email')) {
+      console.error(`[otp] Activation code not sent to ${user.email}: ${err.message}`);
+      return { devOtp: null, otpError: err, otpSent: false };
+    }
+    throw err;
+  }
 }
 
 async function ensureHouseholdJoinCode(household) {
@@ -78,7 +98,25 @@ router.post('/signup', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await User.findOne({ email: normalizedEmail });
-    if (existing) return res.status(409).json({ error: 'Email already registered' });
+    if (existing) {
+      if (!existing.isActive) {
+        const valid = await bcrypt.compare(password, existing.passwordHash);
+        if (!valid) {
+          return res.status(409).json({
+            error: 'Email already registered. Log in with your password to finish verification.',
+          });
+        }
+        const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(existing);
+        const payload = await sessionPayload(existing);
+        return res.json(withOtpMeta(existing, {
+          ...payload,
+          otpSent,
+          message: otpError?.message || 'Check your email for a verification code.',
+          resumed: true,
+        }, devOtp));
+      }
+      return res.status(409).json({ error: 'Email already registered' });
+    }
 
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await User.create({
@@ -87,8 +125,6 @@ router.post('/signup', async (req, res) => {
       name: name.trim(),
       isActive: false,
     });
-
-    let devOtp;
 
     if (joinCode) {
       const household = await findHouseholdByJoinCode(joinCode);
@@ -125,20 +161,22 @@ router.post('/signup', async (req, res) => {
         notifyRoles: ['owner'],
       });
 
-      devOtp = await requestOtpSend(user, 'activation');
+      const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
       const payload = await sessionPayload(user);
       return res.status(201).json(withOtpMeta(user, {
         ...payload,
-        message: 'Verify your email with OTP, then wait for the dashboard owner to approve access.',
+        otpSent,
+        message: otpError?.message || 'Verify your email with OTP, then wait for the dashboard owner to approve access.',
       }, devOtp));
     }
 
     await createHouseholdForUser(user);
-    devOtp = await requestOtpSend(user, 'activation');
+    const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
     const payload = await sessionPayload(user);
     res.status(201).json(withOtpMeta(user, {
       ...payload,
-      message: 'Account created. Check your email for a verification code.',
+      otpSent,
+      message: otpError?.message || 'Account created. Check your email for a verification code.',
     }, devOtp));
   } catch (err) {
     if (sendOtpRateLimitResponse(res, err)) return;
@@ -160,11 +198,12 @@ router.post('/login', async (req, res) => {
     if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
 
     if (!user.isActive) {
-      const devOtp = await requestOtpSend(user, 'activation');
+      const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
       const payload = await sessionPayload(user);
       return res.status(403).json(withOtpMeta(user, {
         ...payload,
-        error: 'Account not activated',
+        otpSent,
+        error: otpError?.message || 'Account not activated',
         code: 'NEEDS_VERIFICATION',
       }, devOtp));
     }
