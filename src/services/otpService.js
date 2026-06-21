@@ -158,7 +158,7 @@ export async function requestOtpSend(user, purpose) {
     try {
       await sendOtpEmail(user.email, otp, purpose);
     } catch (err) {
-      console.error(`[email] Failed to send OTP to ${user.email}:`, err.message);
+      console.error(`[email] OTP saved for ${user.email} but email NOT sent:`, err.message);
       if (process.env.NODE_ENV !== 'production') {
         console.log(`[OTP] ${user.email} (${purpose}): ${otp}`);
       }
@@ -167,7 +167,7 @@ export async function requestOtpSend(user, purpose) {
   } else if (process.env.NODE_ENV !== 'production') {
     console.log(`[OTP] ${user.email} (${purpose}): ${otp}`);
   } else {
-    console.warn(`[OTP] SMTP not configured — code generated for ${user.email} (${purpose}) but not emailed`);
+    console.warn(`[OTP] OTP saved for ${user.email} (${purpose}) — SMTP not configured, no email sent`);
   }
 
   return otp;
