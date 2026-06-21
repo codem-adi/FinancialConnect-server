@@ -20,6 +20,10 @@ import {
   clearExpiredOtpBlock,
 } from '../services/otpService.js';
 import { recordChange } from '../services/auditService.js';
+import {
+  sendWelcomeEmail,
+  sendPasswordResetSuccessEmail,
+} from '../services/emailService.js';
 import { generateJoinCode } from '../utils/joinCode.js';
 
 const router = express.Router();
@@ -243,6 +247,18 @@ router.post('/verify-otp', async (req, res) => {
       }
     }
 
+    if (purpose === 'activation') {
+      const awaiting = await getUserAwaitingMembership(user._id);
+      const active = await getUserMembership(user._id);
+      const membership = awaiting || active;
+      const household = membership ? await Household.findById(membership.householdId) : null;
+      await sendWelcomeEmail(user.email, {
+        name: user.name,
+        householdName: household?.name || 'Your household',
+        isJoinRequest: membership?.status === 'awaiting_approval',
+      });
+    }
+
     const payload = await sessionPayload(user);
     const messages = {
       activation: 'Account activated',
@@ -314,6 +330,8 @@ router.post('/reset-password', async (req, res) => {
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     user.isActive = true;
     await user.save();
+
+    await sendPasswordResetSuccessEmail(user.email, { name: user.name });
 
     const payload = await sessionPayload(user);
     res.json({ ...payload, message: 'Password updated' });

@@ -3,6 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import { connectDB } from './config/db.js';
 import { runStartupMigrations } from './services/seedService.js';
+import { logSmtpStartup } from './services/emailService.js';
+import { startCardBillReminderScheduler } from './services/cardBillReminderService.js';
 import apiRoutes from './routes/api.js';
 import authRoutes from './routes/auth.js';
 import teamRoutes from './routes/team.js';
@@ -31,6 +33,8 @@ async function start() {
   try {
     await connectDB();
     await runStartupMigrations();
+    logSmtpStartup();
+    startCardBillReminderScheduler();
     app.listen(PORT, () => console.log(`RetireWise API listening on port ${PORT}`));
   } catch (err) {
     console.error('Failed to start server:', err.message);

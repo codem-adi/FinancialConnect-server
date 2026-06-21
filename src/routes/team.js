@@ -5,6 +5,11 @@ import HouseholdMember from '../models/HouseholdMember.js';
 import { requireAuth, requireEditor, signToken } from '../middleware/auth.js';
 import { recordChange } from '../services/auditService.js';
 import {
+  sendJoinApprovedEmail,
+  sendJoinRejectedEmail,
+  sendTeamInviteEmail,
+} from '../services/emailService.js';
+import {
   createHouseholdForUser,
   getUserMembership,
   buildAuthResponse,
@@ -85,6 +90,14 @@ router.post('/join-requests/:id/approve', requireAuth, async (req, res) => {
     member.status = 'active';
     await member.save();
 
+    const household = await Household.findById(req.householdId);
+    const approvedUser = member.userId ? await User.findById(member.userId) : null;
+    await sendJoinApprovedEmail(member.email, {
+      name: approvedUser?.name,
+      householdName: household?.name || 'the dashboard',
+      role: member.role,
+    });
+
     await recordChange({
       householdId: req.householdId,
       userId: req.user._id,
@@ -113,6 +126,13 @@ router.post('/join-requests/:id/reject', requireAuth, async (req, res) => {
 
     member.status = 'rejected';
     await member.save();
+
+    const household = await Household.findById(req.householdId);
+    const rejectedUser = member.userId ? await User.findById(member.userId) : null;
+    await sendJoinRejectedEmail(member.email, {
+      name: rejectedUser?.name,
+      householdName: household?.name || 'the dashboard',
+    });
 
     await recordChange({
       householdId: req.householdId,
@@ -173,6 +193,7 @@ router.post('/members', requireAuth, requireEditor, async (req, res) => {
     if (existing) return res.status(409).json({ error: 'Member already invited' });
 
     const invitedUser = await User.findOne({ email: normalizedEmail });
+    const household = await Household.findById(req.householdId);
     const member = await HouseholdMember.create({
       householdId: req.householdId,
       userId: invitedUser?._id || null,
@@ -180,6 +201,12 @@ router.post('/members', requireAuth, requireEditor, async (req, res) => {
       role,
       status: invitedUser?.isActive ? 'active' : 'pending',
       invitedBy: req.user._id,
+    });
+
+    await sendTeamInviteEmail(normalizedEmail, {
+      householdName: household?.name || 'a financial dashboard',
+      role,
+      inviterName: req.user.name,
     });
 
     await recordChange({

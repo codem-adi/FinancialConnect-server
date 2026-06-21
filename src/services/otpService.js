@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { getOtpExpiryMs } from '../config/otp.js';
+import { isSmtpConfigured, sendOtpEmail } from './emailService.js';
 
 export function generateOtp() {
   return String(crypto.randomInt(100000, 999999));
@@ -105,9 +107,8 @@ export function otpRateLimitMeta(user) {
 
 async function applyOtpToUser(user, purpose) {
   const otp = generateOtp();
-  const expiryMinutes = Number(process.env.OTP_EXPIRY_MINUTES) || 10;
   user.otpHash = await bcrypt.hash(otp, 10);
-  user.otpExpires = new Date(Date.now() + expiryMinutes * 60 * 1000);
+  user.otpExpires = new Date(Date.now() + getOtpExpiryMs());
   user.otpPurpose = purpose;
   return otp;
 }
@@ -153,10 +154,18 @@ export async function requestOtpSend(user, purpose) {
   user.otpLastSentAt = new Date();
   await user.save();
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (isSmtpConfigured()) {
+    try {
+      await sendOtpEmail(user.email, otp, purpose);
+    } catch (err) {
+      console.error(`[email] Failed to send OTP to ${user.email}:`, err.message);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[OTP] ${user.email} (${purpose}): ${otp}`);
+      }
+      throw new Error('Could not send verification email. Please try again later.');
+    }
+  } else if (process.env.NODE_ENV !== 'production') {
     console.log(`[OTP] ${user.email} (${purpose}): ${otp}`);
-  } else if (process.env.SMTP_HOST) {
-    console.log(`[OTP] Sent to ${user.email} (${purpose})`);
   } else {
     console.warn(`[OTP] SMTP not configured — code generated for ${user.email} (${purpose}) but not emailed`);
   }
