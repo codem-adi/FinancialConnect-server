@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import HouseholdMember from '../models/HouseholdMember.js';
+import { isSendEmailEnabled } from '../config/email.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'retirewise-dev-secret-change-in-production';
 
@@ -34,6 +35,11 @@ export async function requireAuth(req, res, next) {
     const user = await User.findById(payload.sub);
     if (!user) return res.status(401).json({ error: 'Invalid token' });
 
+    if (!isSendEmailEnabled() && !user.isActive) {
+      user.isActive = true;
+      await user.save();
+    }
+
     const { membership, isAwaiting, isActive } = await resolveAuthState(user);
 
     req.user = user;
@@ -42,10 +48,10 @@ export async function requireAuth(req, res, next) {
     req.role = membership?.role;
     req.awaitingApproval = isAwaiting;
     req.canEdit = !isAwaiting && (membership?.role === 'owner' || membership?.role === 'editor');
-    req.needsVerification = !isActive;
+    req.needsVerification = isSendEmailEnabled() && !isActive;
 
     const inactiveAllowed = ['/me', '/status'].includes(req.path);
-    if (!isActive && !inactiveAllowed) {
+    if (!isActive && !inactiveAllowed && isSendEmailEnabled()) {
       return res.status(403).json({ error: 'Account not activated', code: 'NEEDS_VERIFICATION', email: user.email });
     }
 

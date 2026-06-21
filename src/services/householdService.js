@@ -3,6 +3,7 @@ import Household from '../models/Household.js';
 import HouseholdMember from '../models/HouseholdMember.js';
 import { createFreshAppData } from '../utils/defaults.js';
 import { generateJoinCode } from '../utils/joinCode.js';
+import { isSendEmailEnabled } from '../config/email.js';
 
 async function ensureUniqueJoinCode() {
   for (let i = 0; i < 10; i++) {
@@ -88,6 +89,6 @@ export async function buildAuthResponse(user, membership, household) {
     role: membership?.role || null,
     canEdit: !awaiting && (membership?.role === 'owner' || membership?.role === 'editor'),
     awaitingApproval: awaiting,
-    needsVerification: !user.isActive,
+    needsVerification: isSendEmailEnabled() && !user.isActive,
   };
 }

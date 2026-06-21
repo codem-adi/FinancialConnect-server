@@ -1,7 +1,8 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { getOtpExpiryMs } from '../config/otp.js';
-import { isSmtpConfigured, sendOtpEmail } from './emailService.js';
+import { isEmailConfigured, sendOtpEmail } from './emailService.js';
+import { isSendEmailEnabled } from '../config/email.js';
 
 export function generateOtp() {
   return String(crypto.randomInt(100000, 999999));
@@ -115,6 +116,10 @@ async function applyOtpToUser(user, purpose) {
 
 /** Send OTP with 30s cooldown and 5-send / 1h block limits */
 export async function requestOtpSend(user, purpose) {
+  if (!isSendEmailEnabled()) {
+    throw new Error('Email verification is disabled');
+  }
+
   const { maxSends, blockMinutes, cooldownSec } = getRateLimitConfig();
 
   clearExpiredOtpBlock(user);
@@ -154,7 +159,7 @@ export async function requestOtpSend(user, purpose) {
   user.otpLastSentAt = new Date();
   await user.save();
 
-  if (isSmtpConfigured()) {
+  if (isEmailConfigured()) {
     try {
       await sendOtpEmail(user.email, otp, purpose);
     } catch (err) {
@@ -167,7 +172,7 @@ export async function requestOtpSend(user, purpose) {
   } else if (process.env.NODE_ENV !== 'production') {
     console.log(`[OTP] ${user.email} (${purpose}): ${otp}`);
   } else {
-    console.warn(`[OTP] OTP saved for ${user.email} (${purpose}) — SMTP not configured, no email sent`);
+    console.warn(`[OTP] OTP saved for ${user.email} (${purpose}) — no email provider configured (set RESEND_API_KEY or SMTP_*)`);
   }
 
   return otp;

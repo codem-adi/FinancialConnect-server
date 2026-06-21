@@ -4,6 +4,7 @@ import cors from 'cors';
 import { connectDB } from './config/db.js';
 import { runStartupMigrations } from './services/seedService.js';
 import { verifySmtpConnection } from './services/emailService.js';
+import { getAuthFeatures } from './config/email.js';
 import { startCardBillReminderScheduler } from './services/cardBillReminderService.js';
 import apiRoutes from './routes/api.js';
 import authRoutes from './routes/auth.js';
@@ -21,7 +22,7 @@ app.use(cors(corsOrigins ? { origin: corsOrigins, credentials: true } : undefine
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', app: 'RetireWise API' });
+  res.json({ status: 'ok', app: 'RetireWise API', auth: getAuthFeatures() });
 });
 
 app.use('/api/auth', authRoutes);

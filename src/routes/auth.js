@@ -26,6 +26,7 @@ import {
   sendPasswordResetSuccessEmail,
 } from '../services/emailService.js';
 import { generateJoinCode } from '../utils/joinCode.js';
+import { isSendEmailEnabled, getAuthFeatures } from '../config/email.js';
 
 const router = express.Router();
 const IS_DEV = process.env.NODE_ENV !== 'production';
@@ -68,6 +69,14 @@ async function sendActivationOtpSafe(user) {
   }
 }
 
+async function ensureUserActiveWhenEmailDisabled(user) {
+  if (!isSendEmailEnabled() && !user.isActive) {
+    user.isActive = true;
+    await user.save();
+  }
+  return user;
+}
+
 async function ensureHouseholdJoinCode(household) {
   if (household.joinCode) return household;
   for (let i = 0; i < 10; i++) {
@@ -81,6 +90,10 @@ async function ensureHouseholdJoinCode(household) {
   }
   return household;
 }
+
+router.get('/config', (req, res) => {
+  res.json(getAuthFeatures());
+});
 
 /** Signup — optional joinCode requests access to an existing dashboard */
 router.post('/signup', async (req, res) => {
@@ -99,7 +112,7 @@ router.post('/signup', async (req, res) => {
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await User.findOne({ email: normalizedEmail });
     if (existing) {
-      if (!existing.isActive) {
+      if (!existing.isActive && isSendEmailEnabled()) {
         const valid = await bcrypt.compare(password, existing.passwordHash);
         if (!valid) {
           return res.status(409).json({
@@ -115,6 +128,15 @@ router.post('/signup', async (req, res) => {
           resumed: true,
         }, devOtp));
       }
+      if (!existing.isActive && !isSendEmailEnabled()) {
+        const valid = await bcrypt.compare(password, existing.passwordHash);
+        if (!valid) {
+          return res.status(409).json({ error: 'Email already registered' });
+        }
+        await ensureUserActiveWhenEmailDisabled(existing);
+        const payload = await sessionPayload(existing);
+        return res.json({ ...payload, message: 'Welcome back.' });
+      }
       return res.status(409).json({ error: 'Email already registered' });
     }
 
@@ -123,7 +145,7 @@ router.post('/signup', async (req, res) => {
       email: normalizedEmail,
       passwordHash,
       name: name.trim(),
-      isActive: false,
+      isActive: !isSendEmailEnabled(),
     });
 
     if (joinCode) {
@@ -161,23 +183,33 @@ router.post('/signup', async (req, res) => {
         notifyRoles: ['owner'],
       });
 
-      const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
+      const { devOtp, otpError, otpSent } = isSendEmailEnabled()
+        ? await sendActivationOtpSafe(user)
+        : { devOtp: null, otpError: null, otpSent: false };
       const payload = await sessionPayload(user);
+      const joinMsg = isSendEmailEnabled()
+        ? 'Verify your email with OTP, then wait for the dashboard owner to approve access.'
+        : 'Join request submitted. Wait for the dashboard owner to approve access.';
       return res.status(201).json(withOtpMeta(user, {
         ...payload,
         otpSent,
-        message: otpError?.message || 'Verify your email with OTP, then wait for the dashboard owner to approve access.',
+        message: otpError?.message || joinMsg,
       }, devOtp));
     }
 
     await createHouseholdForUser(user);
-    const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
-    const payload = await sessionPayload(user);
-    res.status(201).json(withOtpMeta(user, {
-      ...payload,
-      otpSent,
-      message: otpError?.message || 'Account created. Check your email for a verification code.',
-    }, devOtp));
+    if (isSendEmailEnabled()) {
+      const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
+      const payload = await sessionPayload(user);
+      res.status(201).json(withOtpMeta(user, {
+        ...payload,
+        otpSent,
+        message: otpError?.message || 'Account created. Check your email for a verification code.',
+      }, devOtp));
+    } else {
+      const payload = await sessionPayload(user);
+      res.status(201).json({ ...payload, message: 'Account created.' });
+    }
   } catch (err) {
     if (sendOtpRateLimitResponse(res, err)) return;
     res.status(500).json({ error: err.message });
@@ -197,7 +229,7 @@ router.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
 
-    if (!user.isActive) {
+    if (!user.isActive && isSendEmailEnabled()) {
       const { devOtp, otpError, otpSent } = await sendActivationOtpSafe(user);
       const payload = await sessionPayload(user);
       return res.status(403).json(withOtpMeta(user, {
@@ -208,6 +240,7 @@ router.post('/login', async (req, res) => {
       }, devOtp));
     }
 
+    await ensureUserActiveWhenEmailDisabled(user);
     const payload = await sessionPayload(user);
     res.json(payload);
   } catch (err) {
@@ -218,6 +251,9 @@ router.post('/login', async (req, res) => {
 
 /** Passwordless login — send OTP to email */
 router.post('/login-otp', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Email login is disabled' });
+  }
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -239,6 +275,9 @@ router.post('/login-otp', async (req, res) => {
 });
 
 router.get('/otp-status', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.json({ allowed: false, disabled: true, blocked: false });
+  }
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -266,6 +305,9 @@ router.get('/otp-status', async (req, res) => {
 });
 
 router.post('/verify-otp', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Email verification is disabled' });
+  }
   try {
     const { email, otp, purpose = 'activation' } = req.body;
     if (!email || !otp) return res.status(400).json({ error: 'Email and OTP are required' });
@@ -311,6 +353,9 @@ router.post('/verify-otp', async (req, res) => {
 });
 
 router.post('/resend-otp', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Email verification is disabled' });
+  }
   try {
     const { email, purpose = 'activation' } = req.body;
     const user = await User.findOne({ email: email.toLowerCase().trim() });
@@ -328,6 +373,9 @@ router.post('/resend-otp', async (req, res) => {
 });
 
 router.post('/forgot-password', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Password reset is disabled' });
+  }
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'Email is required' });
@@ -349,6 +397,9 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 router.post('/reset-password', async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Password reset is disabled' });
+  }
   try {
     const { email, otp, newPassword } = req.body;
     if (!email || !otp || !newPassword) {
@@ -395,7 +446,7 @@ router.get('/status', requireAuth, async (req, res) => {
   try {
     const household = req.householdId ? await Household.findById(req.householdId) : null;
     res.json({
-      needsVerification: !req.user.isActive,
+      needsVerification: isSendEmailEnabled() && !req.user.isActive,
       awaitingApproval: req.awaitingApproval,
       householdName: household?.name,
       email: req.user.email,

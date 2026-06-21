@@ -1,4 +1,5 @@
 import express from 'express';
+import { isSendEmailEnabled } from '../config/email.js';
 import User from '../models/User.js';
 import Household from '../models/Household.js';
 import HouseholdMember from '../models/HouseholdMember.js';
@@ -349,6 +350,9 @@ async function executeLeaveGroup(user, membership) {
 }
 
 router.post('/leave/request-otp', requireAuth, async (req, res) => {
+  if (!isSendEmailEnabled()) {
+    return res.status(404).json({ error: 'Email verification is disabled' });
+  }
   try {
     const membership = req.membership;
     if (!membership) {
@@ -374,14 +378,19 @@ router.post('/leave/request-otp', requireAuth, async (req, res) => {
 
 router.post('/leave', requireAuth, async (req, res) => {
   try {
-    const { otp } = req.body;
-    if (!otp) {
-      return res.status(400).json({ error: 'Verification code is required' });
-    }
-
     const membership = req.membership;
     if (!membership) {
       return res.status(403).json({ error: 'No group membership to leave' });
+    }
+
+    if (!isSendEmailEnabled()) {
+      const payload = await executeLeaveGroup(req.user, membership);
+      return res.json(payload);
+    }
+
+    const { otp } = req.body;
+    if (!otp) {
+      return res.status(400).json({ error: 'Verification code is required' });
     }
 
     if (req.user.otpPurpose && req.user.otpPurpose !== 'leave_group') {
